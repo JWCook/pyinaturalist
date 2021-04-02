@@ -3,6 +3,7 @@ import threading
 from contextlib import contextmanager
 from logging import getLogger
 from os import getenv
+from time import sleep
 from typing import Dict
 from unittest.mock import Mock
 
@@ -68,7 +69,25 @@ def request(
         return MOCK_RESPONSE
     else:
         with ratelimit():
-            return session.request(method, url, params=params, headers=headers, **kwargs)
+            return _request(session, method, url, params=params, headers=headers, **kwargs)
+
+
+def _request(session, *args, **kwargs) -> requests.Response:
+    """Quick and ugly handling for 429 errors, if rate limiting doesn't work"""
+    max_retries = 4
+    n_retries = 0
+
+    while n_retries < max_retries:
+        response = session.request(*args, **kwargs)
+        if response.status_code == 429:
+            logger.error(str(response))
+            n_retries += 1
+            sleep(60 + (10 * n_retries))
+        else:
+            return response
+
+    response.raise_for_status()
+    return response
 
 
 @copy_signature(request, exclude='method')
@@ -95,7 +114,6 @@ def put(url: str, **kwargs) -> requests.Response:
     return request('PUT', url, **kwargs)
 
 
-# TODO: Handle error 429 if we still somehow exceed the rate limit?
 @contextmanager
 def ratelimit(bucket=pyinaturalist.user_agent):
     """Add delays in between requests to stay within the rate limits. If pyrate-limiter is
